@@ -1,0 +1,8 @@
+# Runtime and private data
+device.json
+device-*.json
+default-relay
+*.conf
+mullvad-relays.json
+wireguard-last.conf
+wireguard-lan

@@ -1,0 +1,13 @@
+{
+  "logged_in": {
+    "device": {
+      "wg_data": {
+        "private_key": "REPLACE_WITH_PRIVATE_KEY",
+        "addresses": {
+          "ipv4_address": "10.0.0.2/32",
+          "ipv6_address": "fc00::2/128"
+        }
+      }
+    }
+  }
+}

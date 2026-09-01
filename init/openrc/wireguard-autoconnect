@@ -1,0 +1,26 @@
+#!/sbin/openrc-run
+
+description="WireGuard auto-connect"
+wireguard_command="${wireguard_command:-/usr/local/bin/wireguard.sh}"
+
+depend() {
+    need net
+    use cgroups
+    after firewall
+}
+
+start() {
+    ebegin "Starting WireGuard"
+    "$wireguard_command" autoconnect
+    eend $?
+}
+
+stop() {
+    ebegin "Stopping WireGuard"
+    "$wireguard_command" disconnect
+    eend $?
+}
+
+status() {
+    "$wireguard_command" status
+}
