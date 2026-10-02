@@ -11,6 +11,7 @@ depend() {
 
 start() {
     ebegin "Starting WireGuard"
+    "$wireguard_command" update || ewarn "Relay update failed; using cached relays"
     "$wireguard_command" autoconnect
     eend $?
 }
