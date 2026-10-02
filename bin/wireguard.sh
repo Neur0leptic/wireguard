@@ -413,14 +413,45 @@ wg_lan_toggle() {
     fi
 }
 
+wg_update_warning() {
+    echo "WARNING: Relay update failed: $1. Keeping the existing relay list." >&2
+    ns "Relay update failed: $1. Using cached relays."
+}
+
 wg_update() {
     echo "Fetching relay list from Mullvad API..."
-    tmp=$(mktemp)
-    curl -sS "https://api.mullvad.net/www/relays/all/" -o "$tmp" || { echo "Download failed"; rm -f "$tmp"; return 1; }
-    jq empty "$tmp" 2>/dev/null || { echo "Invalid JSON received"; rm -f "$tmp"; return 1; }
+    tmp=$(mktemp) || { wg_update_warning "Could not create download file"; return 1; }
+    if ! curl -fsS "https://api.mullvad.net/www/relays/all/" -o "$tmp"; then
+        rm -f "$tmp"
+        wg_update_warning "Download failed"
+        return 1
+    fi
+    if ! count=$(jq -er '
+        if type == "array" and length > 0 and
+            all(.[]; type == "object" and
+                (.hostname | type == "string" and length > 0) and
+                (.active | type == "boolean"))
+        then [.[] | select(.active)] | length
+        else error("Invalid relay list")
+        end' "$tmp" 2>/dev/null); then
+        rm -f "$tmp"
+        wg_update_warning "Invalid relay list received"
+        return 1
+    fi
 
-    $DOAS_CMD mv "$tmp" "$RELAYS_JSON"
-    count=$($DOAS_CMD jq '[.[] | select(.active)] | length' "$RELAYS_JSON")
+    # Stage beside the cache so the final rename is atomic, even across filesystems.
+    cache_tmp=$($DOAS_CMD mktemp "${RELAYS_JSON}.XXXXXX") || {
+        rm -f "$tmp"
+        wg_update_warning "Could not create relay cache file"
+        return 1
+    }
+    if ! $DOAS_CMD cp "$tmp" "$cache_tmp" || ! $DOAS_CMD mv "$cache_tmp" "$RELAYS_JSON"; then
+        $DOAS_CMD rm -f "$cache_tmp"
+        rm -f "$tmp"
+        wg_update_warning "Could not save relay list"
+        return 1
+    fi
+    rm -f "$tmp"
     echo "Updated: ${count} active relays saved to $RELAYS_JSON"
     ns "Relay list updated: ${count} servers"
 }

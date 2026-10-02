@@ -38,3 +38,8 @@ wireguard.sh exclude command args
 `init/systemd` and `init/openrc` contain service definitions. Install
 `bin/wireguard.sh` as `/usr/local/bin/wireguard.sh` and the DNS helper as
 `/usr/local/bin/wireguard-dns.sh` before enabling either service.
+
+The systemd service refreshes the relay list before each start. The update uses
+one API request without retries or extra waits. If downloading, validating or
+saving the list fails, it logs a warning and connects using the existing cache.
+Inspect service output with `journalctl -u wireguard-autoconnect.service`.

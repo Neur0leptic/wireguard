@@ -36,11 +36,48 @@ EOF
 
 cat > "$tmp/bin/notify-send" <<'EOF'
 #!/bin/sh
-exit 0
+printf '%s\n' "$*" >> "$MOCK_NOTIFY_LOG"
+EOF
+
+cat > "$tmp/bin/curl" <<'EOF'
+#!/bin/sh
+set -eu
+printf '%s\n' "$*" >> "$MOCK_CURL_LOG"
+[ "$#" -eq 4 ]
+[ "$1" = "-fsS" ]
+[ "$2" = "https://api.mullvad.net/www/relays/all/" ]
+[ "$3" = "-o" ]
+/usr/bin/cp "$MOCK_CURL_PAYLOAD" "$4"
+exit "${MOCK_CURL_STATUS:-0}"
+EOF
+
+cat > "$tmp/bin/mktemp" <<'EOF'
+#!/bin/sh
+case "${MOCK_MKTEMP_FAIL:-}" in
+    download) [ "$#" -eq 0 ] && exit 1 ;;
+    cache) [ "$#" -gt 0 ] && exit 1 ;;
+esac
+exec /usr/bin/mktemp "$@"
+EOF
+
+cat > "$tmp/bin/cp" <<'EOF'
+#!/bin/sh
+if [ "${MOCK_CP_FAIL:-0}" = "1" ]; then
+    printf '%s\n' 'partial-copy' > "$2"
+    exit 1
+fi
+exec /usr/bin/cp "$@"
+EOF
+
+cat > "$tmp/bin/mv" <<'EOF'
+#!/bin/sh
+[ "${MOCK_MV_FAIL:-0}" = "1" ] && exit 1
+exec /usr/bin/mv "$@"
 EOF
 
 chmod +x "$tmp/bin/ip" "$tmp/bin/wg" "$tmp/bin/wg-quick" \
-    "$tmp/bin/nft" "$tmp/bin/notify-send"
+    "$tmp/bin/nft" "$tmp/bin/notify-send" "$tmp/bin/curl" \
+    "$tmp/bin/mktemp" "$tmp/bin/cp" "$tmp/bin/mv"
 
 cat > "$tmp/device.json" <<'EOF'
 {
@@ -69,6 +106,24 @@ cat > "$tmp/relays.json" <<'EOF'
 ]
 EOF
 
+cp "$tmp/relays.json" "$tmp/old-relays.json"
+cat > "$tmp/new-relays.json" <<'EOF'
+[
+  {
+    "hostname": "new-relay",
+    "pubkey": "new-public-key",
+    "ipv4_addr_in": "192.0.2.20",
+    "active": true
+  },
+  {
+    "hostname": "inactive-relay",
+    "pubkey": "inactive-public-key",
+    "ipv4_addr_in": "192.0.2.30",
+    "active": false
+  }
+]
+EOF
+
 printf '%s\n' "test-relay" > "$tmp/default-relay"
 : > "$tmp/mock.log"
 
@@ -76,7 +131,15 @@ run_wireguard() {
     env \
         PATH="$tmp/bin:/usr/bin:/bin" \
         HOME="$tmp/home" \
+        TMPDIR="$tmp" \
         MOCK_LOG="$tmp/mock.log" \
+        MOCK_NOTIFY_LOG="$tmp/notify.log" \
+        MOCK_CURL_LOG="$tmp/curl.log" \
+        MOCK_CURL_PAYLOAD="${MOCK_CURL_PAYLOAD:-$tmp/new-relays.json}" \
+        MOCK_CURL_STATUS="${MOCK_CURL_STATUS:-0}" \
+        MOCK_MKTEMP_FAIL="${MOCK_MKTEMP_FAIL:-}" \
+        MOCK_CP_FAIL="${MOCK_CP_FAIL:-0}" \
+        MOCK_MV_FAIL="${MOCK_MV_FAIL:-0}" \
         NO_DEFAULT_ROUTE="${NO_DEFAULT_ROUTE:-0}" \
         WIREGUARD_PRIVILEGE_CMD="" \
         WIREGUARD_CONFIG_DIR="$tmp/config" \
@@ -118,5 +181,54 @@ if NO_DEFAULT_ROUTE=1 WIREGUARD_NETWORK_TIMEOUT=0 run_wireguard autoconnect; the
     echo "autoconnect unexpectedly succeeded without a default route" >&2
     exit 1
 fi
+
+expect_update_failure() {
+    : > "$tmp/curl.log"
+    : > "$tmp/notify.log"
+    if output=$(run_wireguard update 2>&1); then
+        echo "relay update unexpectedly succeeded" >&2
+        exit 1
+    fi
+    printf '%s\n' "$output" | grep -Fq "WARNING: Relay update failed:"
+    printf '%s\n' "$output" | grep -Fq "Keeping the existing relay list."
+    cmp -s "$tmp/old-relays.json" "$tmp/relays.json"
+    test "$(wc -l < "$tmp/curl.log")" -eq "${1:-1}"
+    test -z "$(find "$tmp" -name 'relays.json.*' -print)"
+    if printf '%s\n' "$output" | grep -Fq "Updated:" ||
+        grep -Fq "Relay list updated:" "$tmp/notify.log"; then
+        echo "failed relay update reported success" >&2
+        exit 1
+    fi
+}
+
+MOCK_CURL_STATUS=7 expect_update_failure
+MOCK_CURL_STATUS=22 expect_update_failure
+
+printf '%s\n' 'not-json' > "$tmp/invalid.json"
+MOCK_CURL_PAYLOAD="$tmp/invalid.json" expect_update_failure
+printf '%s\n' '{"error":"unavailable"}' > "$tmp/invalid.json"
+MOCK_CURL_PAYLOAD="$tmp/invalid.json" expect_update_failure
+printf '%s\n' '[]' > "$tmp/invalid.json"
+MOCK_CURL_PAYLOAD="$tmp/invalid.json" expect_update_failure
+printf '%s\n' '[{"hostname":"bad-relay","active":"true"}]' > "$tmp/invalid.json"
+MOCK_CURL_PAYLOAD="$tmp/invalid.json" expect_update_failure
+
+MOCK_MKTEMP_FAIL=download expect_update_failure 0
+MOCK_MKTEMP_FAIL=cache expect_update_failure
+MOCK_CP_FAIL=1 expect_update_failure
+MOCK_MV_FAIL=1 expect_update_failure
+
+: > "$tmp/curl.log"
+: > "$tmp/notify.log"
+output=$(run_wireguard update)
+printf '%s\n' "$output" | grep -Fq "Updated: 1 active relays saved to"
+grep -Fq "Relay list updated: 1 servers" "$tmp/notify.log"
+cmp -s "$tmp/new-relays.json" "$tmp/relays.json"
+test "$(stat -c '%a' "$tmp/relays.json")" = "600"
+test "$(wc -l < "$tmp/curl.log")" -eq 1
+test -z "$(find "$tmp" -name 'relays.json.*' -print)"
+
+grep -Fxq 'ExecStartPre=-/usr/local/bin/wireguard.sh update' \
+    "$repo_dir/init/systemd/wireguard-autoconnect.service"
 
 echo "All tests passed"
