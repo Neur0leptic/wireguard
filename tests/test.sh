@@ -47,7 +47,7 @@ printf '%s\n' "$*" >> "$MOCK_CURL_LOG"
 [ "$1" = "-fsS" ]
 [ "$2" = "https://api.mullvad.net/www/relays/all/" ]
 [ "$3" = "-o" ]
-/usr/bin/cp "$MOCK_CURL_PAYLOAD" "$4"
+PATH=/usr/bin:/bin cp "$MOCK_CURL_PAYLOAD" "$4"
 exit "${MOCK_CURL_STATUS:-0}"
 EOF
 
@@ -57,7 +57,7 @@ case "${MOCK_MKTEMP_FAIL:-}" in
     download) [ "$#" -eq 0 ] && exit 1 ;;
     cache) [ "$#" -gt 0 ] && exit 1 ;;
 esac
-exec /usr/bin/mktemp "$@"
+PATH=/usr/bin:/bin exec mktemp "$@"
 EOF
 
 cat > "$tmp/bin/cp" <<'EOF'
@@ -66,13 +66,13 @@ if [ "${MOCK_CP_FAIL:-0}" = "1" ]; then
     printf '%s\n' 'partial-copy' > "$2"
     exit 1
 fi
-exec /usr/bin/cp "$@"
+PATH=/usr/bin:/bin exec cp "$@"
 EOF
 
 cat > "$tmp/bin/mv" <<'EOF'
 #!/bin/sh
 [ "${MOCK_MV_FAIL:-0}" = "1" ] && exit 1
-exec /usr/bin/mv "$@"
+PATH=/usr/bin:/bin exec mv "$@"
 EOF
 
 chmod +x "$tmp/bin/ip" "$tmp/bin/wg" "$tmp/bin/wg-quick" \
