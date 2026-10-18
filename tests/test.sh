@@ -13,8 +13,16 @@ cat > "$tmp/bin/ip" <<'EOF'
 #!/bin/sh
 [ "${NO_DEFAULT_ROUTE:-0}" = "1" ] && exit 0
 case "$*" in
-    "route show default") echo "default via 192.0.2.1 dev eth0" ;;
+    "route show default")
+        # An unplugged cable's route stays listed, marked dead, ahead of the live one.
+        case "${MOCK_ROUTES:-live}" in
+            unplugged) echo "default via 198.51.100.1 dev eth1 metric 100 dead linkdown"
+                echo "default via 192.0.2.1 dev eth0 proto dhcp metric 2053" ;;
+            dead) echo "default via 198.51.100.1 dev eth1 metric 100 dead linkdown" ;;
+            *) echo "default via 192.0.2.1 dev eth0" ;;
+        esac ;;
     "-o -f inet addr show eth0") echo "2: eth0 inet 192.0.2.2/24" ;;
+    "-o -f inet addr show eth1") echo "3: eth1 inet 198.51.100.2/24" ;;
 esac
 EOF
 
@@ -141,6 +149,7 @@ run_wireguard() {
         MOCK_CP_FAIL="${MOCK_CP_FAIL:-0}" \
         MOCK_MV_FAIL="${MOCK_MV_FAIL:-0}" \
         NO_DEFAULT_ROUTE="${NO_DEFAULT_ROUTE:-0}" \
+        MOCK_ROUTES="${MOCK_ROUTES:-live}" \
         WIREGUARD_PRIVILEGE_CMD="" \
         WIREGUARD_CONFIG_DIR="$tmp/config" \
         WIREGUARD_CGROUP_PATH="$tmp/cgroup" \
@@ -176,6 +185,16 @@ output=$(env \
 test "$output" = "No previous connection to reconnect"
 
 run_wireguard --help | grep -Fq "wireguard.sh autoconnect"
+
+: > "$tmp/notify.log"
+MOCK_ROUTES=unplugged run_wireguard lan-block
+grep -Fxq "WireGuard LAN blocked: 192.0.2.2/24" "$tmp/notify.log"
+run_wireguard lan-allow
+
+if MOCK_ROUTES=dead WIREGUARD_NETWORK_TIMEOUT=0 run_wireguard autoconnect; then
+    echo "autoconnect unexpectedly succeeded with only a dead default route" >&2
+    exit 1
+fi
 
 if NO_DEFAULT_ROUTE=1 WIREGUARD_NETWORK_TIMEOUT=0 run_wireguard autoconnect; then
     echo "autoconnect unexpectedly succeeded without a default route" >&2

@@ -10,7 +10,10 @@ DNS_NFT_TABLE="wg-dns"
 MULLVAD_DNS="${WIREGUARD_DNS:-100.64.0.23}"
 
 get_default_iface() {
-    ip route show default 2>/dev/null | awk '{for(i=1;i<NF;i++) if($i=="dev") print $(i+1)}' | head -1
+    # An unplugged cable's route stays listed, marked dead; the kernel no longer uses it.
+    ip route show default 2>/dev/null |
+        awk '{for(i=1;i<=NF;i++) if($i=="dead") next; for(i=1;i<NF;i++) if($i=="dev") print $(i+1)}' |
+        head -1
 }
 
 PHYS_IFACE="$(get_default_iface)"
