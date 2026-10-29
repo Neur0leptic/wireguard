@@ -83,9 +83,18 @@ cat > "$tmp/bin/mv" <<'EOF'
 PATH=/usr/bin:/bin exec mv "$@"
 EOF
 
+cat > "$tmp/bin/systemctl" <<'EOF'
+#!/bin/sh
+case "$*" in
+    "is-active --quiet systemd-networkd") [ "${MOCK_NETWORKD:-inactive}" = "active" ] ;;
+    *) printf 'systemctl %s\n' "$*" >> "$MOCK_LOG"
+        [ "${MOCK_SYSTEMCTL_FAIL:-0}" = "0" ] ;;
+esac
+EOF
+
 chmod +x "$tmp/bin/ip" "$tmp/bin/wg" "$tmp/bin/wg-quick" \
     "$tmp/bin/nft" "$tmp/bin/notify-send" "$tmp/bin/curl" \
-    "$tmp/bin/mktemp" "$tmp/bin/cp" "$tmp/bin/mv"
+    "$tmp/bin/mktemp" "$tmp/bin/cp" "$tmp/bin/mv" "$tmp/bin/systemctl"
 
 cat > "$tmp/device.json" <<'EOF'
 {
@@ -150,6 +159,8 @@ run_wireguard() {
         MOCK_MV_FAIL="${MOCK_MV_FAIL:-0}" \
         NO_DEFAULT_ROUTE="${NO_DEFAULT_ROUTE:-0}" \
         MOCK_ROUTES="${MOCK_ROUTES:-live}" \
+        MOCK_NETWORKD="${MOCK_NETWORKD:-inactive}" \
+        MOCK_SYSTEMCTL_FAIL="${MOCK_SYSTEMCTL_FAIL:-0}" \
         WIREGUARD_PRIVILEGE_CMD="" \
         WIREGUARD_CONFIG_DIR="$tmp/config" \
         WIREGUARD_CGROUP_PATH="$tmp/cgroup" \
@@ -160,6 +171,7 @@ run_wireguard() {
         WIREGUARD_DEFAULT_RELAY_FILE="$tmp/default-relay" \
         WIREGUARD_DNS_HELPER="/usr/local/bin/wireguard-dns.sh" \
         WIREGUARD_NETWORK_TIMEOUT="${WIREGUARD_NETWORK_TIMEOUT:-30}" \
+        WIREGUARD_NETWORKD_DROPIN="$tmp/networkd.conf.d/wireguard.conf" \
         "$script" "$@"
 }
 
@@ -175,6 +187,31 @@ grep -Fq "PrivateKey = test-private-key" "$tmp/config/test-relay.conf"
 grep -Fq "PostUp = /usr/local/bin/wireguard-dns.sh up %i" "$tmp/config/test-relay.conf"
 grep -Fq "Endpoint = 192.0.2.10:51820" "$tmp/config/test-relay.conf"
 grep -Fq "up test-relay" "$tmp/mock.log"
+test ! -e "$tmp/networkd.conf.d/wireguard.conf"
+
+# systemd-networkd deletes routing rules it did not create when a link changes, so connecting
+# turns that off and restarts networkd once, before wg-quick adds its rules.
+: > "$tmp/mock.log"
+MOCK_NETWORKD=active run_wireguard reconnect
+test "$(cat "$tmp/networkd.conf.d/wireguard.conf")" = "[Network]
+ManageForeignRoutingPolicyRules=no"
+test "$(sed -n 1p "$tmp/mock.log")" = "systemctl restart systemd-networkd"
+grep -Fxq "up test-relay" "$tmp/mock.log"
+
+: > "$tmp/mock.log"
+MOCK_NETWORKD=active run_wireguard reconnect
+if grep -q '^systemctl' "$tmp/mock.log"; then
+    echo "networkd was restarted although its setting was already in place" >&2
+    exit 1
+fi
+
+# A failed setup must not keep the tunnel down.
+rm "$tmp/networkd.conf.d/wireguard.conf"
+: > "$tmp/mock.log"
+: > "$tmp/notify.log"
+MOCK_NETWORKD=active MOCK_SYSTEMCTL_FAIL=1 run_wireguard reconnect 2>/dev/null
+grep -Fxq "up test-relay" "$tmp/mock.log"
+grep -Fq "a link drop may bypass the VPN" "$tmp/notify.log"
 
 output=$(env \
     PATH="$tmp/bin:/usr/bin:/bin" \

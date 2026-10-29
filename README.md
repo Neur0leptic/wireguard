@@ -43,3 +43,13 @@ The systemd service refreshes the relay list before each start. The update uses
 one API request without retries or extra waits. If downloading, validating or
 saving the list fails, it logs a warning and connects using the existing cache.
 Inspect service output with `journalctl -u wireguard-autoconnect.service`.
+
+## systemd-networkd
+
+systemd-networkd deletes routing rules it did not create whenever it
+reconfigures a link, for example after a short cable drop. wg-quick's rules
+carry all traffic into the tunnel, so without them traffic leaves outside the
+VPN. When systemd-networkd is running, `connect` and `reconnect` therefore
+write `/etc/systemd/networkd.conf.d/wireguard.conf` with
+`ManageForeignRoutingPolicyRules=no` and restart systemd-networkd once to
+apply it. If that fails, they warn and connect anyway.

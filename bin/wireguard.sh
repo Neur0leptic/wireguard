@@ -22,6 +22,9 @@ RELAYS_JSON="${WIREGUARD_RELAYS_JSON:-/var/cache/mullvad-relays.json}"
 LAN_FILE="${WIREGUARD_LAN_FILE:-/var/cache/wireguard-lan}"
 DNS_HELPER="${WIREGUARD_DNS_HELPER:-/usr/local/bin/wireguard-dns.sh}"
 NETWORK_TIMEOUT="${WIREGUARD_NETWORK_TIMEOUT:-30}"
+NETWORKD_DROPIN="${WIREGUARD_NETWORKD_DROPIN:-/etc/systemd/networkd.conf.d/wireguard.conf}"
+NETWORKD_DROPIN_TEXT="[Network]
+ManageForeignRoutingPolicyRules=no"
 USER_WIREGUARD_DIR="${XDG_CONFIG_HOME:-${HOME}/.config}/wireguard"
 
 if [ -n "${WIREGUARD_DEVICE_JSON:-}" ]; then
@@ -191,6 +194,22 @@ wg_quick_down() {
     rm -f "$tmp"
 }
 
+# systemd-networkd deletes routing rules it did not create whenever it reconfigures a link, as
+# after a short cable drop. wg-quick's rules carry all traffic into the tunnel; without them it
+# leaves through the physical link, outside the VPN. networkd reads the setting only when it starts.
+wg_networkd_keep_rules() {
+    systemctl is-active --quiet systemd-networkd 2>/dev/null || return 0
+    [ "$(cat "$NETWORKD_DROPIN" 2>/dev/null)" = "$NETWORKD_DROPIN_TEXT" ] && return 0
+    if $DOAS_CMD mkdir -p "${NETWORKD_DROPIN%/*}" &&
+        printf '%s\n' "$NETWORKD_DROPIN_TEXT" | $DOAS_CMD tee "$NETWORKD_DROPIN" >/dev/null &&
+        $DOAS_CMD systemctl restart systemd-networkd; then
+        wg_wait_network || true
+        return 0
+    fi
+    echo "WARNING: Could not configure systemd-networkd; a link drop may bypass the VPN." >&2
+    ns "Warning: a link drop may bypass the VPN (networkd setup failed)"
+}
+
 wg_connect() {
     profile="$1"
     [ -z "$profile" ] && return 1
@@ -210,6 +229,7 @@ wg_connect() {
         wg_nft_down
     fi
 
+    wg_networkd_keep_rules
     wg_dns_firewall_up || return 1
     tmp=$(mktemp) || return 1
     if ! $DOAS_CMD wg-quick up "$profile" >"$tmp" 2>&1; then
@@ -296,6 +316,7 @@ wg_reconnect() {
 
     gen_config "$target" || { ns "Reconnect failed: could not generate config"; return 1; }
 
+    wg_networkd_keep_rules
     wg_dns_firewall_up || return 1
     tmp=$(mktemp) || return 1
     if ! $DOAS_CMD wg-quick up "$target" >"$tmp" 2>&1; then
